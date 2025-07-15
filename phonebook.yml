@@ -95,9 +95,9 @@ Resources:
                 dnf install git -y
                 echo "${MyDBURI}" > /home/ec2-user/dbserver.endpoint
                 cd /home/ec2-user
-                TOKEN=$(aws --region=us-east-1 ssm get-parameter --name /ismail/phonebook/token --with-decryption --query 'Parameter.Value' --output text)
-                git clone https://$TOKEN@github.com/iskilicaslan61/Phonebook-App.git
-                python3 /home/ec2-user/Phonebook-App/phonebook-app.py &
+                
+                git clone https://github.com/iskilicaslan61/Phonebook-App.git
+                sudo python3 /home/ec2-user/Phonebook-App/phonebook-app.py &
               - MyDBURI: !GetAtt DBInstance.Endpoint.Address
    
   TG:

@@ -8,6 +8,10 @@ phonebook.yml
 # Original vulnerable README
 README.md
 
+
+# Exclude old secure template (replaced by separate stacks)
+phonebook-secure.yml
+
 # Python cache and compiled files
 __pycache__/
 *.py[cod]
@@ -156,6 +160,7 @@ vulnerability-reports/
 !phonebook-app-secure.py
 !phonebook-app-only.yml
 !rds-database.yml
+!ssm-parameters.yml
 !requirements.txt
 !README-SECURE.md
 !security-test.py

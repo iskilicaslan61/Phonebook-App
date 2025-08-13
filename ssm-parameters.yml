@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  SSM Parameters Template for Phonebook Application.
+  This template creates all required SSM parameters automatically.
+  Deploy this FIRST before the RDS and application stacks.
+
+Parameters:
+  DatabaseUsername:
+    Description: Database username for the phonebook application
+    Type: String
+    Default: phonebook_user
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]*$'
+    ConstraintDescription: Username must start with a letter and contain only letters, numbers, and underscores
+  
+  DatabasePassword:
+    Description: Database password for the phonebook application
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 128
+    AllowedPattern: '^[^"@/\\]+$'
+    ConstraintDescription: Password cannot contain quotes, @, /, or backslash characters
+  
+  FlaskSecretKey:
+    Description: Flask secret key for session management (leave empty for auto-generation)
+    Type: String
+    Default: ""
+    NoEcho: true
+
+Resources:
+  DatabaseUsernameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ismail/phonebook/username
+      Type: String
+      Value: !Ref DatabaseUsername
+      Description: Database username for phonebook application
+      Tags:
+        Application: Phonebook
+        Environment: Production
+        Purpose: Database Credentials
+
+  DatabasePasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ismail/phonebook/password
+      Type: SecureString
+      Value: !Ref DatabasePassword
+      Description: Database password for phonebook application (encrypted)
+      Tags:
+        Application: Phonebook
+        Environment: Production
+        Purpose: Database Credentials
+
+  FlaskSecretKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /ismail/phonebook/flask-secret-key
+      Type: SecureString
+      Value: !If 
+        - HasCustomSecretKey
+        - !Ref FlaskSecretKey
+        - !Sub '{{resolve:secretsmanager:${FlaskSecretKeySecret}:SecretString:secret_key}}'
+      Description: Flask secret key for session management
+      Tags:
+        Application: Phonebook
+        Environment: Production
+        Purpose: Application Security
+
+  FlaskSecretKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-flask-secret
+      Description: Flask secret key for the phonebook application
+      GenerateSecretString:
+        SecretStringTemplate: '{"secret_key": ""}'
+        GenerateStringKey: secret_key
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Application
+          Value: Phonebook
+        - Key: Environment
+          Value: Production
+        - Key: Purpose
+          Value: Application Security
+
+Conditions:
+  HasCustomSecretKey: !Not [!Equals [!Ref FlaskSecretKey, ""]]
+
+Outputs:
+  DatabaseUsernameParameterName:
+    Value: !Ref DatabaseUsernameParameter
+    Description: Name of the database username SSM parameter
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseUsernameParameterName
+  
+  DatabasePasswordParameterName:
+    Value: !Ref DatabasePasswordParameter
+    Description: Name of the database password SSM parameter
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabasePasswordParameterName
+  
+  FlaskSecretKeyParameterName:
+    Value: !Ref FlaskSecretKeyParameter
+    Description: Name of the Flask secret key SSM parameter
+    Export:
+      Name: !Sub ${AWS::StackName}-FlaskSecretKeyParameterName
+  
+  DatabaseUsername:
+    Value: !Ref DatabaseUsername
+    Description: Database username value
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseUsername
+  
+  FlaskSecretKeySecretArn:
+    Value: !Ref FlaskSecretKeySecret
+    Description: ARN of the Flask secret key in Secrets Manager
+    Export:
+      Name: !Sub ${AWS::StackName}-FlaskSecretKeySecretArn 

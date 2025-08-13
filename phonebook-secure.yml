@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Secure CloudFormation Template for Phonebook Application. This template creates Application Load Balancer 
+  with Auto Scaling Group of Amazon Linux 2023 EC2 Instances which host Python Flask Web Application.
+  EC2 instances are placed within WebServerSecurityGroup which allows http (80) connections only from ALBSecurityGroup,
+  and allows tcp(3306) connections only within itself. RDS DB instance is placed within WebServerSecurityGroup 
+  so that Database Server can communicate with Web Servers. Application Load Balancer is placed within ALBSecurityGroup 
+  which allows http (80) connections from anywhere. WebServerASG Auto Scaling Group is using the LT 
+  Launch Template in order to spin up instances needed. LT Launch Template is configured to prepare Python Flask 
+  environment on EC2, and to deploy Phonebook Application on Flask Server after downloading the app code 
+  from Github repository. RDS credentials are located in parameter store and fetch by boto3 in .py file.
+
+Parameters:
+  MyVPC:
+    Description: VPC Id of your existing account
+    Type: AWS::EC2::VPC::Id
+  KeyName:
+    Description: Please enter your Key pair
+    Type: AWS::EC2::KeyPair::KeyName 
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64'
+  Subnets:
+    Description: Please select your subnets used by ALB
+    Type: List<AWS::EC2::Subnet::Id>
+  PrivateSubnets:
+    Description: Please select your private subnets for RDS
+    Type: List<AWS::EC2::Subnet::Id>
+  MyDbusername:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /ismail/phonebook/username
+
+Resources:
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      DesiredCapacity: 2
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB 
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LT 
+        Version: !GetAtt LT.LatestVersionNumber 
+      MaxSize: 3 
+      MinSize: 1  
+      TargetGroupARNs:
+        - !Ref TG
+      VPCZoneIdentifier: !Ref Subnets
+      Tags:
+        - Key: Name
+          Value: !Sub Web Server of ${AWS::StackName} Stack
+          PropagateAtLaunch: true
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      DefaultActions:
+        - TargetGroupArn: !Ref TG
+          Type: forward
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4 
+      Scheme: internet-facing
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId 
+      Subnets: !Ref Subnets
+      Type: application
+      Attributes:
+        - Key: access_logs.s3.enabled
+          Value: true
+        - Key: access_logs.s3.bucket
+          Value: !Ref AccessLogsBucket
+        - Key: access_logs.s3.prefix
+          Value: alb-logs
+
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-access-logs-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+
+  LT:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData: 
+        ImageId: !Ref LatestAmiId 
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName 
+        IamInstanceProfile: 
+          Name: !Ref MyInstanceProfile
+        SecurityGroupIds:
+          - !GetAtt WebServerSecurityGroup.GroupId
+        TagSpecifications: 
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub Web Server of ${AWS::StackName} Stack
+        UserData:
+          Fn::Base64:
+            !Sub 
+              - |
+                #! /bin/bash -x
+                dnf update -y
+                dnf install python3 -y
+                dnf install python-pip -y
+                pip3 install Flask==2.3.3
+                pip3 install Flask-MySql
+                pip3 install boto3
+                dnf install git -y
+                
+                # Create environment file
+                cat > /home/ec2-user/.env << EOF
+                DB_HOST=${MyDBURI}
+                AWS_REGION=${AWS::Region}
+                FLASK_SECRET_KEY=${FlaskSecretKey}
+                EOF
+                
+                cd /home/ec2-user
+                git clone https://github.com/iskilicaslan61/Phonebook-App.git
+                
+                # Copy secure version
+                cp Phonebook-App/phonebook-app-secure.py Phonebook-App/phonebook-app.py
+                
+                # Start application
+                sudo python3 /home/ec2-user/Phonebook-App/phonebook-app.py &
+              - MyDBURI: !GetAtt DBInstance.Endpoint.Address
+                FlaskSecretKey: !Ref FlaskSecretKey
+   
+  TG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthyThresholdCount: 2 
+      HealthCheckTimeoutSeconds: 10
+      Port: 80
+      Protocol: HTTP 
+      TargetType: instance 
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref MyVPC
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+  
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      AllowMajorVersionUpgrade: false 
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: 7
+      DBInstanceClass: db.t3.micro
+      DBInstanceIdentifier: !Sub ${AWS::StackName}-phonebook-app
+      DBName: ismail_phonebook        
+      DBSecurityGroups:
+        - !Ref DBSecurityGroup 
+      Engine: MySQL
+      EngineVersion: 8.0.41 
+      MasterUsername: !Ref MyDbusername
+      MasterUserPassword: '{{resolve:ssm-secure:/ismail/phonebook/password}}'
+      Port: 3306
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      StorageType: gp2
+      VPCSecurityGroups:
+        - !GetAtt DBSecurityGroup.GroupId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DeletionProtection: true
+      MultiAZ: false
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instance
+      SubnetIds: !Ref PrivateSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-db-subnet-group
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS database
+      GroupName: !Sub ${AWS::StackName}-db-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt WebServerSecurityGroup.GroupId
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-db-sg
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for web servers
+      GroupName: !Sub ${AWS::StackName}-webserver-sg
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-webserver-sg
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      GroupName: !Sub ${AWS::StackName}-alb-sg
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-alb-sg
+  
+  MyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${AWS::StackName}-SSMInstanceProfile
+      Roles:
+        - !Ref MySSMRole
+
+  MySSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-SSMRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub ${AccessLogsBucket.Arn}/*
+
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-MonitoringRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+
+  FlaskSecretKey:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${AWS::StackName}/flask/secret-key
+      Type: SecureString
+      Value: !Sub '{{resolve:secretsmanager:${FlaskSecretManagerSecret}:SecretString:secret_key}}'
+
+  FlaskSecretManagerSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-flask-secret
+      Description: Flask secret key for the phonebook application
+      GenerateSecretString:
+        SecretStringTemplate: '{"secret_key": ""}'
+        GenerateStringKey: secret_key
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+Outputs:
+  WebsiteURL:
+    Value: !Sub 
+      - http://${ALBAddress}
+      - ALBAddress: !GetAtt ALB.DNSName
+    Description: Phonebook Application Load Balancer URL
+  DatabaseEndpoint:
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Description: RDS Database Endpoint
+  AccessLogsBucketName:
+    Value: !Ref AccessLogsBucket
+    Description: S3 Bucket for ALB Access Logs 

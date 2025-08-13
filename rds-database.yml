@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  RDS Database Template for Phonebook Application.
+  This template creates a secure RDS MySQL instance with proper security configurations.
+  Deploy this FIRST before the main application stack.
+
+Parameters:
+  MyVPC:
+    Description: VPC Id of your existing account
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnets:
+    Description: Please select your private subnets for RDS (at least 2 for Multi-AZ)
+    Type: List<AWS::EC2::Subnet::Id>
+  MyDbusername:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /ismail/phonebook/username
+  DatabaseName:
+    Description: Name of the database to create
+    Type: String
+    Default: ismail_phonebook
+  DBInstanceClass:
+    Description: Database instance class
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+      - db.r5.large
+      - db.r5.xlarge
+  AllocatedStorage:
+    Description: Allocated storage in GB
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 65536
+  BackupRetentionPeriod:
+    Description: Number of days to retain backups
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+
+Resources:
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS database - only allows from EC2 instances
+      GroupName: !Sub ${AWS::StackName}-db-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+          Description: Temporary access - REMOVE AFTER EC2 SECURITY GROUP IS CREATED
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-db-sg
+        - Key: Purpose
+          Value: Database Security Group
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instance
+      SubnetIds: !Ref PrivateSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-db-subnet-group
+
+  MonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-MonitoringRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-MonitoringRole
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: !Ref AllocatedStorage
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceIdentifier: !Sub ${AWS::StackName}-phonebook-db
+      DBName: !Ref DatabaseName
+      DBSecurityGroups:
+        - !Ref DBSecurityGroup
+      Engine: MySQL
+      EngineVersion: 8.0.41
+      MasterUsername: !Ref MyDbusername
+      MasterUserPassword: '{{resolve:ssm-secure:/ismail/phonebook/password}}'
+      Port: 3306
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      StorageType: gp2
+      VPCSecurityGroups:
+        - !GetAtt DBSecurityGroup.GroupId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DeletionProtection: true
+      MultiAZ: false
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt MonitoringRole.Arn
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: sun:04:00-sun:05:00
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-phonebook-db
+        - Key: Purpose
+          Value: Phonebook Application Database
+        - Key: Environment
+          Value: Production
+
+Outputs:
+  DatabaseEndpoint:
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Description: RDS Database Endpoint Address
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseEndpoint
+  
+  DatabasePort:
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Description: RDS Database Port
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabasePort
+  
+  DatabaseName:
+    Value: !Ref DatabaseName
+    Description: Name of the created database
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseName
+  
+  DBSecurityGroupId:
+    Value: !Ref DBSecurityGroup
+    Description: Database Security Group ID
+    Export:
+      Name: !Sub ${AWS::StackName}-DBSecurityGroupId
+  
+  DBSubnetGroupName:
+    Value: !Ref DBSubnetGroup
+    Description: Database Subnet Group Name
+    Export:
+      Name: !Sub ${AWS::StackName}-DBSubnetGroupName 

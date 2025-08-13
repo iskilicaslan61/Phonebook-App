@@ -154,7 +154,8 @@ vulnerability-reports/
 
 # Keep only the secure versions
 !phonebook-app-secure.py
-!phonebook-secure.yml
+!phonebook-app-only.yml
+!rds-database.yml
 !requirements.txt
 !README-SECURE.md
 !security-test.py
